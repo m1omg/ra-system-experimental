@@ -493,7 +493,7 @@ function updateScaleUI(){
 function updateTextUI(){
   const b=document.getElementById('t-text');
   if(b){ b.classList.toggle('on', USE_VERBATIM);
-    b.innerHTML = USE_VERBATIM ? "📖 Author's text" : "📖 Summary text"; }
+    b.innerHTML = USE_VERBATIM ? "📖 Author's text" : "📖 Summary + source"; }
 }
 function setScaleMode(real){
   realScale=real;
@@ -745,15 +745,16 @@ function typeLabelFor(d){
 }
 function openInfo(d){
   APP.currentData=d;
-  // author's own text if it exists; otherwise fall back to my summary (hybrid)
-  const v = (USE_VERBATIM && typeof DESCRIPTIONS_VERBATIM!=='undefined') ? DESCRIPTIONS_VERBATIM[d.key] : null;
-  const usingAuthor = !!v;
+  // the author's word-for-word text, where the source document has it
+  const verbatim = (typeof DESCRIPTIONS_VERBATIM!=='undefined') ? DESCRIPTIONS_VERBATIM[d.key] : null;
+  // author's-text edition shows only the author's words, so hide my own tagline there
+  const authorOnly = USE_VERBATIM && !!verbatim;
   document.getElementById('i-type').textContent=typeLabelFor(d);
   document.getElementById('i-name').innerHTML=d.name+(d.alt?`<span>${d.alt}</span>`:'');
-  // tagline is my own line — hide it only when showing the author's own words
+  // tagline is my own line — hide it only when showing the author's own words alone
   const tagEl=document.getElementById('i-tag');
-  tagEl.textContent = usingAuthor ? '' : (d.tagline||'');
-  tagEl.style.display = usingAuthor ? 'none' : 'block';
+  tagEl.textContent = authorOnly ? '' : (d.tagline||'');
+  tagEl.style.display = authorOnly ? 'none' : 'block';
   // gallery
   const g=document.getElementById('i-gallery'); g.innerHTML='';
   (d.images||[]).forEach(([file,cap])=>{
@@ -767,17 +768,27 @@ function openInfo(d){
   const t=document.getElementById('i-stats'); t.innerHTML='';
   (d.stats||[]).forEach(([k,v])=>{ const tr=document.createElement('tr');
     tr.innerHTML=`<td>${k}</td><td>${v}</td>`; t.appendChild(tr); });
-  // description — author's verbatim text where it exists, my summary otherwise
+  // description
   const ds=document.getElementById('i-desc'); ds.innerHTML='';
-  const text = usingAuthor ? v : (d.desc||'');
-  if(USE_VERBATIM && !usingAuthor){
-    const note=document.createElement('p');
-    note.style.cssText='font-style:italic;color:#8ea2c0;font-size:12px';
-    note.textContent='(No description in the source document yet — summary shown.)';
-    ds.appendChild(note);
+  const addParas=(text)=>{ (text||'').split('\n\n').forEach(par=>{ if(!par.trim())return;
+    const p=document.createElement('p'); p.textContent=par.trim(); ds.appendChild(p); }); };
+  const addSource=(label)=>{ const s=document.createElement('p'); s.className='src';
+    s.textContent=label; ds.appendChild(s); };
+  if(USE_VERBATIM){
+    // author's-text edition: the author's own words, or a note + summary fallback
+    if(verbatim){ addParas(verbatim); }
+    else {
+      const note=document.createElement('p');
+      note.style.cssText='font-style:italic;color:#8ea2c0;font-size:12px';
+      note.textContent='(No description in the source document yet — summary shown.)';
+      ds.appendChild(note);
+      addParas(d.desc);
+    }
+  } else {
+    // default edition: my short summary, then the author's verbatim text beneath it
+    addParas(d.desc);
+    if(verbatim){ addSource("From the source — author's text"); addParas(verbatim); }
   }
-  text.split('\n\n').forEach(par=>{ if(!par.trim())return; const p=document.createElement('p');
-    p.textContent=par.trim(); ds.appendChild(p); });
   document.getElementById('info').classList.add('open');
 }
 function closeInfo(){ document.getElementById('info').classList.remove('open'); setActiveNav(selected); }

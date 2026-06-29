@@ -12,13 +12,16 @@ locally.
 
 ### Two editions
 
-- **`index.html`** — the **summary** edition (short, readable write-ups).
+- **`index.html`** — the **default** edition: each world opens with a short, readable
+  summary, followed by your *exact* words from the source document underneath (where the
+  document describes that world).
 - **`index-verbatim.html`** — the **author's-text** edition: descriptions are your
-  *exact* words from the source document, with no paraphrasing.
+  *exact* words only, with no summary and no paraphrasing.
 
 Either way you can flip between the two with the **📖** button in the bottom bar, and
 the two pages link to each other from the top-left title. (Worlds the document hasn't
-described yet — Shu, Horus, Khonsu, Nut, Osiris — show a short note in author's-text mode.)
+described yet — Shu, Horus, Khonsu, Nut, Osiris — show only the summary in the default
+edition, and a short note in author's-text mode.)
 
 ## What's inside
 
