@@ -48,6 +48,11 @@ function bodyF(){ return realScale ? 0.5 : 1.0; }   // body-size factor for curr
 const KM_PER_AU = 1.495978707e8;          // km per astronomical unit
 const MIN_PIXELS = 3;                      // smallest on-screen body radius (px) in real mode
 function realRadiusScene(km){ return (km||1)/KM_PER_AU*AU_UNIT; }   // true radius in real-mode scene units
+// --- free-roam flight: real km <-> scene units, speed of light, throttle range (FTL) ---
+const KM_PER_UNIT = KM_PER_AU/AU_UNIT;     // real km per scene unit (≈ 1.36e6)
+const C_KMS = 299792.458;                  // speed of light, km/s
+const FLY_MIN_KMS = 1, FLY_MAX_KMS = 10000*C_KMS;   // throttle range — superluminal allowed
+const kmsToUnits = kms => kms/KM_PER_UNIT; // km/s -> scene units/s
 
 /* ============================================================
    Seeded value-noise / fbm for procedural planet textures
@@ -252,6 +257,14 @@ let USE_VERBATIM = !!window.USE_VERBATIM;   // true = show only the author's own
 const bodies=[];           // every animated body
 const pickables=[];        // meshes for raycasting
 let selected=null;
+
+// --- free-roam flight state ---
+let flying=false, flyModel='cruise', throttleKms=0, autoOrient=false;
+const flyVel=new THREE.Vector3();              // current velocity (scene units/s), shared by all models
+const flyEuler=new THREE.Euler(0,0,0,'YXZ');   // look orientation: y=yaw, x=pitch, z=roll
+let flyTarget=null, flyFollow=null, flyGoto=null;
+const _flyPrevTarget=new THREE.Vector3();
+const flyKeys={};
 
 const labelLayer=document.getElementById('labels');
 
@@ -545,6 +558,7 @@ function updateTextUI(){
     b.innerHTML = USE_VERBATIM ? "📖 Author's text" : "📖 Summary + source"; }
 }
 function setScaleMode(real){
+  if(!real && flying) exitFly();     // Compressed is the overview map — leave free-roam
   realScale=real;
   applyScaleMode();
   frameSystem();
@@ -602,29 +616,32 @@ function animate(){
     _clockT += dt; if(_clockT>=0.25){ _clockT=0; updateClock(); }
   }
 
-  // focus tween
-  if(tween.active){
-    tween.t=Math.min(1, tween.t + dt/0.9);
-    const e=1-Math.pow(1-tween.t,3);
-    const bp=worldPos(tween.body);
-    const desiredTarget=bp.clone();
-    const dir=tween.fromCam.clone().sub(tween.fromTarget).normalize();
-    const desiredCam=bp.clone().add(dir.multiplyScalar(tween.dist));
-    controls.target.lerpVectors(tween.fromTarget, desiredTarget, e);
-    camera.position.lerpVectors(tween.fromCam, desiredCam, e);
-    if(tween.t>=1){ tween.active=false; follow=tween.body; }
-  } else if(follow){
-    const bp=worldPos(follow);
-    const delta=bp.clone().sub(controls.target);
-    controls.target.add(delta);
-    camera.position.add(delta);
+  if(flying){
+    updateFly(dt);
+  } else {
+    // focus tween
+    if(tween.active){
+      tween.t=Math.min(1, tween.t + dt/0.9);
+      const e=1-Math.pow(1-tween.t,3);
+      const bp=worldPos(tween.body);
+      const desiredTarget=bp.clone();
+      const dir=tween.fromCam.clone().sub(tween.fromTarget).normalize();
+      const desiredCam=bp.clone().add(dir.multiplyScalar(tween.dist));
+      controls.target.lerpVectors(tween.fromTarget, desiredTarget, e);
+      camera.position.lerpVectors(tween.fromCam, desiredCam, e);
+      if(tween.t>=1){ tween.active=false; follow=tween.body; }
+    } else if(follow){
+      const bp=worldPos(follow);
+      const delta=bp.clone().sub(controls.target);
+      controls.target.add(delta);
+      camera.position.add(delta);
+    }
+    controls.update();
   }
-
-  controls.update();
   if(realScale) updateBodySizes();        // true size, floored to a visible dot
-  // adapt the depth range to zoom so close fly-ins to true-scale worlds stay precise
-  const camDist=camera.position.distanceTo(controls.target);
-  const near=Math.max(camDist*0.002, 0.0002), far=camDist+30000;
+  // adapt the depth range to zoom (nearest body while flying, orbit target otherwise)
+  const refDist = flying ? nearestBodyDist() : camera.position.distanceTo(controls.target);
+  const near=Math.max(refDist*0.002, 0.0002), far=refDist+30000;
   if(camera.near!==near || camera.far!==far){ camera.near=near; camera.far=far; camera.updateProjectionMatrix(); }
   renderer.render(scene,camera);
   if(showLabels) updateLabels();
@@ -695,19 +712,23 @@ const tip=document.getElementById('tip');
 
 function setupInteraction(){
   const dom=renderer.domElement;
-  let downX=0,downY=0,moved=false;
-  dom.addEventListener('pointerdown',e=>{downX=e.clientX;downY=e.clientY;moved=false;
+  let downX=0,downY=0,moved=false,pdown=false,lastX=0,lastY=0;
+  dom.addEventListener('pointerdown',e=>{ pdown=true; downX=lastX=e.clientX; downY=lastY=e.clientY; moved=false;
     document.getElementById('nav').classList.remove('open');});
   dom.addEventListener('pointermove',e=>{
     if(Math.abs(e.clientX-downX)>4||Math.abs(e.clientY-downY)>4) moved=true;
-    hover(e);
+    if(flying){ if(pdown) flyLook(e.clientX-lastX, e.clientY-lastY); lastX=e.clientX; lastY=e.clientY; }
+    else hover(e);
   });
-  dom.addEventListener('pointerup',e=>{
+  dom.addEventListener('pointerup',e=>{ pdown=false;
     if(moved) return;
     const hit=pick(e);
-    if(hit){ focusBody(hit,true); }
+    if(flying) setFlyTarget(hit);          // tap a world to make it the fly target
+    else if(hit){ focusBody(hit,true); }
   });
+  dom.addEventListener('pointercancel',()=>{ pdown=false; });
   dom.addEventListener('pointerleave',()=>{tip.style.opacity=0;});
+  dom.addEventListener('wheel',e=>{ if(flying){ e.preventDefault(); adjustThrottle(e.deltaY<0?4:-4); } },{passive:false});
 
   document.getElementById('play').onclick=togglePlay;
   document.getElementById('speed').oninput=e=>setSpeed(+e.target.value);
@@ -726,6 +747,28 @@ function setupInteraction(){
   document.getElementById('helpbtn').onclick=()=>document.getElementById('help').classList.toggle('open');
   const navbtn=document.getElementById('navbtn');
   if(navbtn) navbtn.onclick=()=>document.getElementById('nav').classList.toggle('open');
+
+  // --- free-roam flight controls ---
+  const flyBtn=document.getElementById('t-fly'); if(flyBtn) flyBtn.onclick=toggleFly;
+  const fm=document.getElementById('fly-model'); if(fm) fm.onclick=cycleFlyModel;
+  const gt=document.getElementById('fly-goto'); if(gt) gt.onclick=flyGoToTarget;
+  const fo=document.getElementById('fly-orient'); if(fo) fo.onclick=()=>{ autoOrient=!autoOrient; updateAutoOrientUI(); };
+  const fbk=document.getElementById('fly-brake'); if(fbk) fbk.onclick=flyBrake;
+  const fex=document.getElementById('fly-exit'); if(fex) fex.onclick=exitFly;
+  const thr=document.getElementById('throttle'); if(thr) thr.oninput=e=>setThrottleV(+e.target.value);
+  setThrottleV(0);
+  const MOVE=['KeyW','KeyA','KeyS','KeyD','KeyR','KeyF','KeyC','KeyQ','KeyE','Space','BracketLeft','BracketRight'];
+  window.addEventListener('keydown',e=>{
+    if(e.target&&(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')) return;
+    if(!flying) return;
+    flyKeys[e.code]=true;
+    if(e.code==='BracketRight') adjustThrottle(4);
+    else if(e.code==='BracketLeft') adjustThrottle(-4);
+    else if(e.code==='KeyG') flyGoToTarget();
+    else if(e.code==='Escape') exitFly();
+    if(MOVE.includes(e.code)) e.preventDefault();
+  });
+  window.addEventListener('keyup',e=>{ flyKeys[e.code]=false; });
 
   // lightbox
   const lb=document.getElementById('lightbox'), lbi=document.getElementById('lightbox-img');
@@ -812,6 +855,148 @@ function focusBody(key, openPanel){
   }
   selected=key; setActiveNav(key);
   if(openPanel!==false) openInfo(rec.data);
+}
+
+/* ============================================================
+   Free-roam flight (Celestia / Space-Engine style) — you ARE the camera
+   ============================================================ */
+const FLY_LOOK_SENS = 0.0042;        // radians of look per pixel dragged
+const _fa=new THREE.Vector3(), _fb=new THREE.Vector3(), _fc=new THREE.Vector3(), _fq=new THREE.Quaternion();
+
+function toggleFly(){ flying ? exitFly() : enterFly(); }
+function enterFly(){
+  if(flying) return;
+  if(!realScale) setScaleMode(true);          // flight is a real-scale experience
+  flying=true; tween.active=false; follow=null; controls.enabled=false;
+  flyEuler.setFromQuaternion(camera.quaternion,'YXZ'); flyEuler.z=0;
+  flyVel.set(0,0,0);
+  document.getElementById('flyhud').classList.add('on');
+  const b=document.getElementById('t-fly'); if(b) b.classList.add('on');
+  updateFlyModelUI(); updateAutoOrientUI(); updateFlyHUD();
+}
+function exitFly(){
+  if(!flying) return;
+  flying=false; flyFollow=null; flyGoto=null; controls.enabled=true;
+  _fa.set(0,0,-1).applyQuaternion(camera.quaternion);     // park the orbit pivot ahead of view
+  controls.target.copy(camera.position).addScaledVector(_fa, 20);
+  document.getElementById('flyhud').classList.remove('on');
+  const b=document.getElementById('t-fly'); if(b) b.classList.remove('on');
+}
+function flyLook(dx,dy){
+  autoOrient=false; updateAutoOrientUI();
+  flyEuler.y -= dx*FLY_LOOK_SENS; flyEuler.x -= dy*FLY_LOOK_SENS;
+  const lim=Math.PI/2-0.01; flyEuler.x=Math.max(-lim,Math.min(lim,flyEuler.x));
+}
+function cycleFlyModel(){
+  flyModel = flyModel==='cruise'?'newton':flyModel==='newton'?'flycam':'cruise';
+  if(flyModel!=='newton') flyVel.set(0,0,0);
+  updateFlyModelUI();
+}
+function updateFlyModelUI(){ const b=document.getElementById('fly-model');
+  if(b) b.textContent = flyModel==='cruise'?'🛟 Cruise':flyModel==='newton'?'🚀 Newtonian':'🎮 Flycam'; }
+function updateAutoOrientUI(){ const b=document.getElementById('fly-orient'); if(b) b.classList.toggle('on',autoOrient); }
+function flyBrake(){ flyVel.set(0,0,0); }
+function setFlyTarget(key){
+  const rec=key&&bodies.find(b=>b.data.key===key);
+  if(rec){ flyTarget=rec; selected=key; setActiveNav(key); }
+  updateFlyHUD();
+}
+function flyGoToTarget(){
+  if(!flyTarget) return;
+  flyGoto={ rec:flyTarget, t:0, dur:1.8, fromPos:camera.position.clone(), fromQuat:camera.quaternion.clone() };
+}
+function gotoFrameDist(rec){ return Math.max(realRadiusScene(rec.data.radiusKm)*Math.max(sizeMult,1)*4, 0.01); }
+function lookQuatAt(tp){ _fq.copy(camera.quaternion); camera.up.set(0,1,0); camera.lookAt(tp);
+  const q=camera.quaternion.clone(); camera.quaternion.copy(_fq); return q; }
+
+function setThrottleV(v){               // slider 0..100 -> km/s (log); 0 = stopped
+  v=Math.max(0,Math.min(100,v));
+  throttleKms = v<=0 ? 0 : Math.exp(Math.log(FLY_MIN_KMS)+(Math.log(FLY_MAX_KMS)-Math.log(FLY_MIN_KMS))*(v/100));
+  const sl=document.getElementById('throttle'); if(sl && +sl.value!==v) sl.value=v;
+  updateFlyHUD();
+}
+function adjustThrottle(d){ const sl=document.getElementById('throttle'); if(sl) setThrottleV(+sl.value+d); }
+
+function fmtSpeed(kms){
+  if(kms<1) return '0 km/s';
+  if(kms<30000) return Math.round(kms).toLocaleString()+' km/s';
+  const c=kms/C_KMS; return (c<10?c.toFixed(2):c<100?c.toFixed(1):Math.round(c).toLocaleString())+' c';
+}
+function fmtTime(s){
+  if(!isFinite(s)||s<0) return '—';
+  if(s<90) return Math.round(s)+' s';
+  if(s<5400) return (s/60).toFixed(1)+' min';
+  if(s<172800) return (s/3600).toFixed(1)+' h';
+  if(s<5256000) return (s/86400).toFixed(1)+' d';
+  return (s/31557600).toFixed(1)+' yr';
+}
+function fmtDist(km){
+  if(km<1e6) return Math.round(km).toLocaleString()+' km';
+  const au=km/KM_PER_AU; return au<0.01?(km/1e6).toFixed(2)+' M km':au.toFixed(au<10?3:1)+' AU';
+}
+function updateFlyHUD(){
+  if(!flying) return;
+  const sp=document.getElementById('fly-speed'); if(sp) sp.textContent=fmtSpeed(flyVel.length()*KM_PER_UNIT);
+  const tg=document.getElementById('fly-target'), eta=document.getElementById('fly-eta');
+  if(flyTarget){
+    const tp=worldPosOf(flyTarget), rangeKm=camera.position.distanceTo(tp)*KM_PER_UNIT;
+    if(tg) tg.textContent='◎ '+flyTarget.data.name+' · '+fmtDist(rangeKm);
+    _fa.copy(tp).sub(camera.position).normalize();
+    const closeKms=flyVel.dot(_fa)*KM_PER_UNIT;
+    if(eta) eta.textContent = 'ETA '+(closeKms>1?fmtTime(rangeKm/closeKms):'—');
+  } else { if(tg) tg.textContent='◎ no target — tap a world'; if(eta) eta.textContent=''; }
+}
+function nearestBodyDist(){
+  let d=1e12; for(const rec of bodies){ const dd=camera.position.distanceToSquared(worldPosOf(rec)); if(dd<d) d=dd; }
+  return Math.max(Math.sqrt(d), 0.01);
+}
+
+/* per-frame flight update (called from animate while flying) */
+function updateFly(dt){
+  if(flyKeys['KeyQ']) flyEuler.z += dt*1.2;
+  if(flyKeys['KeyE']) flyEuler.z -= dt*1.2;
+
+  // cinematic Go-to auto-pilot
+  if(flyGoto){
+    flyGoto.t=Math.min(1, flyGoto.t+dt/flyGoto.dur); const e=1-Math.pow(1-flyGoto.t,3);
+    const tp=worldPosOf(flyGoto.rec);
+    _fa.copy(flyGoto.fromPos).sub(tp); if(_fa.lengthSq()<1e-9) _fa.set(0,0,1); _fa.normalize();
+    _fb.copy(tp).addScaledVector(_fa, gotoFrameDist(flyGoto.rec));
+    camera.position.lerpVectors(flyGoto.fromPos, _fb, e);
+    camera.quaternion.slerpQuaternions(flyGoto.fromQuat, lookQuatAt(tp), e);
+    if(flyGoto.t>=1){ flyFollow=flyGoto.rec; flyTarget=flyGoto.rec; _flyPrevTarget.copy(tp);
+      flyEuler.setFromQuaternion(camera.quaternion,'YXZ'); flyGoto=null; }
+    updateFlyHUD(); return;
+  }
+
+  // follow: co-move with a body as it orbits
+  if(flyFollow){ const tp=worldPosOf(flyFollow); camera.position.add(_fa.copy(tp).sub(_flyPrevTarget)); _flyPrevTarget.copy(tp); }
+
+  // orientation
+  if(autoOrient && flyTarget){
+    camera.quaternion.slerp(lookQuatAt(worldPosOf(flyTarget)), Math.min(1,dt*3));
+    flyEuler.setFromQuaternion(camera.quaternion,'YXZ');
+  } else camera.quaternion.setFromEuler(flyEuler);
+
+  // movement: forward / right / up of current view
+  _fa.set(0,0,-1).applyQuaternion(camera.quaternion);
+  _fb.set(1,0,0).applyQuaternion(camera.quaternion);
+  _fc.set(0,1,0).applyQuaternion(camera.quaternion);
+  const fwd=(flyKeys['KeyW']?1:0)-(flyKeys['KeyS']?1:0);
+  const str=(flyKeys['KeyD']?1:0)-(flyKeys['KeyA']?1:0);
+  const ver=(flyKeys['KeyR']?1:0)+(flyKeys['Space']?1:0)-(flyKeys['KeyF']?1:0)-(flyKeys['KeyC']?1:0);
+  const spd=kmsToUnits(throttleKms)*((flyKeys['ShiftLeft']||flyKeys['ShiftRight'])?6:1);
+  if(flyModel==='cruise'){               // coast forward at throttle; keys add strafe
+    flyVel.copy(_fa).multiplyScalar(spd).addScaledVector(_fb,str*spd).addScaledVector(_fc,ver*spd);
+  } else if(flyModel==='flycam'){        // move only while a key is held
+    _fa.multiplyScalar(fwd).addScaledVector(_fb,str).addScaledVector(_fc,ver);
+    if(_fa.lengthSq()>0) flyVel.copy(_fa.normalize()).multiplyScalar(spd); else flyVel.set(0,0,0);
+  } else {                                // newton: thrust accelerates, drift forever
+    _fa.multiplyScalar(fwd).addScaledVector(_fb,str).addScaledVector(_fc,ver);
+    if(_fa.lengthSq()>0) flyVel.addScaledVector(_fa.normalize(), spd*dt);
+  }
+  camera.position.addScaledVector(flyVel, dt);
+  updateFlyHUD();
 }
 
 /* ============================================================
