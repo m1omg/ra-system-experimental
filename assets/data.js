@@ -349,7 +349,7 @@ const MOONS = [
   {
     key: "nu", name: "Nu", parent: "uatur", kind: "icemoon",
     tagline: "An ice-ocean moon with open water under a vacuum sky — and life",
-    dist: 0.137, ecc: 0.086, period: 0.026,
+    dist: 0.0009133, ecc: 0.086, period: 0.026,   // 136,610 km from Uat-Ur, expressed in AU
     radiusKm: 1836, rotationPeriod: 1.2,
     color: 0xcfd6c4,
     rocky: { base:"#8a8f7a", a:"#e8e2c8", b:"#3a5a6a", c:"#d8c24a" },
@@ -378,7 +378,7 @@ const MOONS = [
   {
     key: "naunet", name: "Naunet", parent: "uatur", kind: "icemoon",
     tagline: "Where do Mars-like worlds end and icy moons begin?",
-    dist: 0.226, ecc: 0.019, period: 0.050,
+    dist: 0.0015085, ecc: 0.019, period: 0.050,   // 225,660 km from Uat-Ur, expressed in AU
     radiusKm: 2475, rotationPeriod: 2.0,
     color: 0xc4b6a4,
     rocky: { base:"#7a6a58", a:"#cbbfae", b:"#5a4a3a", c:"#e8ddca" },
