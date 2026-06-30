@@ -242,7 +242,7 @@ const PLANETS = [
     dist: 3.50, ecc: 0.179, period: 6.135,
     radiusKm: 13728, rotationPeriod: 6,
     color: 0x2a6bb0,
-    terran: { ocean:"#0e3a72", ocean2:"#2f73bd", land:"#dfeaf2", cloud:"#dfeefa", landAmt:0.08, ice:true },
+    terran: { ocean:"#0e3a72", ocean2:"#2f73bd", land:"#dfeaf2", cloud:"#dfeefa", landAmt:-0.15, ice:true },
     atmo: 0x7ab0ee,
     life: "seeded",
     stats: [

@@ -84,7 +84,25 @@ function colorsOf(d){
 }
 function trim(s,n){ if(!s) return ''; s=String(s).replace(/\s+/g,' ').trim(); return s.length>n?s.slice(0,n-1).trim()+'…':s; }
 
+const HEADER = [
+  "Equirectangular planetary surface texture MAP (albedo / colour map) for wrapping onto a 3D sphere.",
+  "Strict requirements: 2:1 aspect ratio; the LEFT and RIGHT edges must tile seamlessly (continuous, no visible seam); content near the top and bottom edges is compressed toward the poles.",
+  "This is a FLAT UNWRAPPED MAP ONLY — do NOT draw a globe or a sphere, no planet floating in space, no black background, no stars, no outer-space, no lighting, no day/night terminator, no drop shadows, no text or labels, no border. Fill the entire frame with surface."
+];
+/* per-body prompt overrides (the generic template gets the subject wrong) */
+const PROMPT_OVERRIDE = {
+  uatur: [
+    ...HEADER,
+    "Subject: Uat-Ur — a GLOBAL OCEAN world with ABSOLUTELY NO LAND: no continents, no islands, no coastlines, no rock or beaches — 100% open deep-blue water from edge to edge.",
+    "The ONLY non-water features are bright pale blue-white polar ICE CAPS along the top and bottom edges.",
+    "Scattered SPARSELY across the dark ocean, and faintly frosting the inner edges of the ice caps, are delicate blooms of BIOLUMINESCENT VIOLET / PURPLE phytoplankton — soft glowing magenta-violet wisps and swirls. Keep them SUBTLE and uncommon: the great majority of the map is deep blue ocean; the purple is a faint luminous accent, not dominant, not covering everything.",
+    "Dominant colours (hex): #0e3a72 and #2f73bd for the deep ocean, #dfeefa for the ice caps, with sparse #8a3fb0 / #b86fd0 bioluminescent purple.",
+    "Photoreal, crisp, high-resolution. No land anywhere — water and ice only."
+  ].join('\n')
+};
+
 function buildPrompt(d){
+  if(PROMPT_OVERRIDE[d.key]) return PROMPT_OVERRIDE[d.key];
   const kindLine = KIND_LINE[d.kind] || KIND_LINE[d.terran?'terran':d.rocky?'rocky':'gasgiant'];
   const colors = colorsOf(d);
   const flavor = trim(d.desc, 360);

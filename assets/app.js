@@ -34,6 +34,8 @@ const DEFAULT_RATE_YPS = 0.0006;          // ≈ 6 hours / second — gentle def
 const rateToSlider = (yps)=> 100*Math.log(yps/RATE_MIN_YPS)/Math.log(RATE_MAX_YPS/RATE_MIN_YPS);
 const DEFAULT_SPEED_V = rateToSlider(DEFAULT_RATE_YPS);
 const DEFAULT_SIZE_V  = 100;             // Size slider value for the default body size (sizeMult = 1.0)
+const SPIN_GAIN = 20;                     // rotation now scales with the time rate; this keeps the
+                                          // default speed's spin ≈ the old look (0.02 timeScale × 20 = 0.4)
 
 let realScale = true;                     // default to REAL scale (per request)
 
@@ -413,6 +415,10 @@ function build(){
   renderer=new THREE.WebGLRenderer({antialias:true, canvas:undefined});
   renderer.setSize(innerWidth,innerHeight);
   renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  // AI textures are brighter than the procedural ones — roll off highlights so icy worlds
+  // stop clipping to pure white. Procedural edition keeps its original (untone-mapped) look.
+  const aiTex = (typeof window!=='undefined' && window.USE_AI_TEXTURES);
+  if(aiTex){ renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.0; }
   document.getElementById('app').appendChild(renderer.domElement);
 
   controls=new THREE.OrbitControls(camera, renderer.domElement);
@@ -424,8 +430,8 @@ function build(){
   clock=new THREE.Clock();
 
   // lights
-  scene.add(new THREE.AmbientLight(0x4a5a7a, 0.85));
-  sunLight=new THREE.PointLight(0xfff3e0, 2.4, 0, 0.0);  // no attenuation -> all worlds lit
+  scene.add(new THREE.AmbientLight(0x4a5a7a, aiTex?0.6:0.85));
+  sunLight=new THREE.PointLight(0xfff3e0, aiTex?1.9:2.4, 0, 0.0);  // no attenuation -> all worlds lit
   scene.add(sunLight);
 
   buildStarfield();
@@ -455,7 +461,7 @@ function build(){
                     radius:sizeDisp(HORUS.radiusKm), orbitOpacity:0.28 });
   horusHolder=horusRec.holder;
   addStarGlow(horusRec.mesh, horusRec.radius, '#ff7a44', '#7a1c08', 2.4);  // glow scales with mesh
-  const hLight=new THREE.PointLight(0xff5a2a, 0.9, horusRec.radius*70, 1.2);
+  const hLight=new THREE.PointLight(0xff5a2a, aiTex?0.55:0.9, horusRec.radius*70, 1.2);
   horusRec.mesh.add(hLight);
   for(const m of HORUS_MOONS){ addMoon(m, horusRec); }
 
@@ -574,7 +580,7 @@ function animate(){
   if(playing){
     for(const rec of bodies){
       if(rec.aDisp>0){ rec.M += (Math.PI*2/rec.period)*YEARS_PER_SEC*timeScale*dt; positionBody(rec); }
-      rec.mesh.rotation.y += rec.spin*dt*(0.4+timeScale*0.8);
+      rec.mesh.rotation.y += rec.spin*dt*timeScale*SPIN_GAIN;   // rotation slows/freezes with the time rate
     }
     elapsedYears += YEARS_PER_SEC*timeScale*dt;          // real sim-time elapsed
     _clockT += dt; if(_clockT>=0.25){ _clockT=0; updateClock(); }
