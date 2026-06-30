@@ -43,6 +43,11 @@ function distDisp(au){ return realScale ? au*AU_UNIT : DIST_K*Math.pow(au, DIST_
 function sizeDisp(km){ return Math.max(0.55, SIZE_K*Math.pow(km, SIZE_P)); }
 function starVisR(){ return realScale ? STAR_R_REAL : STAR_R_COMPRESS; }
 function bodyF(){ return realScale ? 0.5 : 1.0; }   // body-size factor for current mode
+// Real-scale mode: bodies render at TRUE size, but never smaller than ~MIN_PIXELS on screen
+// (a visible dot when far; real geometry takes over once you zoom close — see updateBodySizes).
+const KM_PER_AU = 1.495978707e8;          // km per astronomical unit
+const MIN_PIXELS = 3;                      // smallest on-screen body radius (px) in real mode
+function realRadiusScene(km){ return (km||1)/KM_PER_AU*AU_UNIT; }   // true radius in real-mode scene units
 
 /* ============================================================
    Seeded value-noise / fbm for procedural planet textures
@@ -254,11 +259,15 @@ function makeAtmosphere(radius, color, strength){
   const mat=new THREE.ShaderMaterial({
     uniforms:{ c:{value:new THREE.Color(color)}, p:{value:strength} },
     vertexShader:`varying vec3 vN; varying vec3 vV;
+      #include <logdepthbuf_pars_vertex>
       void main(){ vN=normalize(normalMatrix*normal);
         vec4 mv=modelViewMatrix*vec4(position,1.0); vV=normalize(-mv.xyz);
-        gl_Position=projectionMatrix*mv; }`,
+        gl_Position=projectionMatrix*mv;
+        #include <logdepthbuf_vertex> }`,
     fragmentShader:`uniform vec3 c; uniform float p; varying vec3 vN; varying vec3 vV;
-      void main(){ float i=pow(1.0-abs(dot(vN,vV)),2.6); gl_FragColor=vec4(c, i*p); }`,
+      #include <logdepthbuf_pars_fragment>
+      void main(){ #include <logdepthbuf_fragment>
+        float i=pow(1.0-abs(dot(vN,vV)),2.6); gl_FragColor=vec4(c, i*p); }`,
     side:THREE.BackSide, blending:THREE.AdditiveBlending, transparent:true, depthWrite:false
   });
   const m=new THREE.Mesh(new THREE.SphereGeometry(radius,48,48), mat);
@@ -409,10 +418,12 @@ function build(){
   scene=new THREE.Scene();
   scene.background=new THREE.Color(0x04060c);
 
-  camera=new THREE.PerspectiveCamera(48, innerWidth/innerHeight, 0.1, 400000);
+  // tiny near plane + logarithmic depth buffer so you can fly right up to a true-scale world
+  // (spanning ~2,500 km moons to 46 AU orbits) without clipping or z-fighting.
+  camera=new THREE.PerspectiveCamera(48, innerWidth/innerHeight, 0.0005, 400000);
   camera.position.set(0, 95, 235);
 
-  renderer=new THREE.WebGLRenderer({antialias:true, canvas:undefined});
+  renderer=new THREE.WebGLRenderer({antialias:true, canvas:undefined, logarithmicDepthBuffer:true});
   renderer.setSize(innerWidth,innerHeight);
   renderer.setPixelRatio(Math.min(devicePixelRatio,2));
   // AI textures are brighter than the procedural ones — roll off highlights so icy worlds
@@ -423,7 +434,7 @@ function build(){
 
   controls=new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping=true; controls.dampingFactor=0.06;
-  controls.minDistance=0.8; controls.maxDistance=40000;
+  controls.minDistance=realScale?0.004:0.8; controls.maxDistance=40000;   // real mode: fly right up to a world
   controls.zoomSpeed=2.4;                  // wheel zooms further per notch
   controls.target.set(0,0,0);
 
@@ -510,6 +521,7 @@ function applyScaleMode(){
   for(const rec of bodies){ if(rec.helio){ rec.aDisp=distDisp(rec.data.dist); rebuildOrbitLine(rec); } }
   applySizes();
   controls.maxDistance = realScale?20000:4000;
+  controls.minDistance = realScale?0.004:0.8;
   for(const rec of bodies) positionBody(rec);
   updateScaleUI();
 }
@@ -605,8 +617,23 @@ function animate(){
   }
 
   controls.update();
+  if(realScale) updateBodySizes();        // true size, floored to a visible dot
   renderer.render(scene,camera);
   if(showLabels) updateLabels();
+}
+
+/* Real-scale sizing: render each body at its true radius but never below ~MIN_PIXELS on
+   screen, so distant worlds stay visible dots and reveal true scale as you zoom in. */
+const _szPos=new THREE.Vector3();
+function updateBodySizes(){
+  const f = Math.tan(camera.fov*Math.PI/360) * 2*MIN_PIXELS / (renderer.domElement.clientHeight||innerHeight);
+  for(const rec of bodies){
+    rec.mesh.getWorldPosition(_szPos);
+    const d = camera.position.distanceTo(_szPos);
+    const target = Math.max(realRadiusScene(rec.data.radiusKm)*sizeMult, d*f);   // max(real, dot-floor)
+    if(rec.data.kind==='star') starGroup.scale.setScalar(target/STAR_R_COMPRESS);
+    else rec.mesh.scale.setScalar(target/rec.radius);
+  }
 }
 
 function worldPosOf(rec){ const v=new THREE.Vector3(); rec.mesh.getWorldPosition(v); return v; }
@@ -766,9 +793,15 @@ function focusBody(key, openPanel){
   const bp=worldPosOf(rec);
   tween.active=true; tween.t=0; tween.body=rec;
   tween.fromCam.copy(camera.position); tween.fromTarget.copy(controls.target);
-  const vr = (rec.data.kind==='star') ? starVisR() : rec.radius*bodyF()*Math.max(sizeMult,0.5);
-  tween.dist = Math.max(vr*5.5, vr*4 + (realScale?2.5:8));
-  if(rec.data.kind==='star') tween.dist = starVisR()*7;
+  if(realScale){
+    // frame the body's TRUE size (fly close enough that real geometry shows, not the dot-floor)
+    const er = realRadiusScene(rec.data.radiusKm)*Math.max(sizeMult,1);
+    tween.dist = Math.max(er*4, controls.minDistance*1.5);
+  } else {
+    const vr = (rec.data.kind==='star') ? starVisR() : rec.radius*bodyF()*Math.max(sizeMult,0.5);
+    tween.dist = Math.max(vr*5.5, vr*4 + 8);
+    if(rec.data.kind==='star') tween.dist = starVisR()*7;
+  }
   selected=key; setActiveNav(key);
   if(openPanel!==false) openInfo(rec.data);
 }
