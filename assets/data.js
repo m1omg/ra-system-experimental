@@ -329,14 +329,15 @@ const MOONS = [
       "subtle comet-like tail that often sweeps across Wadjet, seasoning its clouds."
   },
   {
-    key: "satismoon", name: "Satis's Moon", parent: "satis", kind: "rocky",
+    key: "satismoon", name: "Khnum", parent: "satis", kind: "rocky",
     tagline: "A small companion that keeps Satis alive",
-    dist: 0.0026, ecc: 0.03, period: 0.045,
+    dist: 0.00045977, ecc: 0.03, period: 0.011239,   // 68,780 km from Satis (AU); real Kepler period ≈ 4.1 d
     radiusKm: 1390, rotationPeriod: 2.5,
     color: 0x9a958c,
     rocky: { base:"#6f6a62", a:"#a8a299", b:"#4a463f", c:"#c4bfb6" },
     stats: [
       ["Mass", "~0.5 × Luna"],
+      ["Orbital distance", "68,780 km (around Satis)"],
       ["Parent", "Satis"]
     ],
     images: [],
