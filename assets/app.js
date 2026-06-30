@@ -629,7 +629,8 @@ const tip=document.getElementById('tip');
 function setupInteraction(){
   const dom=renderer.domElement;
   let downX=0,downY=0,moved=false;
-  dom.addEventListener('pointerdown',e=>{downX=e.clientX;downY=e.clientY;moved=false;});
+  dom.addEventListener('pointerdown',e=>{downX=e.clientX;downY=e.clientY;moved=false;
+    document.getElementById('nav').classList.remove('open');});
   dom.addEventListener('pointermove',e=>{
     if(Math.abs(e.clientX-downX)>4||Math.abs(e.clientY-downY)>4) moved=true;
     hover(e);
@@ -656,6 +657,8 @@ function setupInteraction(){
   document.getElementById('reset').onclick=resetView;
   document.getElementById('close').onclick=closeInfo;
   document.getElementById('helpbtn').onclick=()=>document.getElementById('help').classList.toggle('open');
+  const navbtn=document.getElementById('navbtn');
+  if(navbtn) navbtn.onclick=()=>document.getElementById('nav').classList.toggle('open');
 
   // lightbox
   const lb=document.getElementById('lightbox'), lbi=document.getElementById('lightbox-img');
@@ -705,6 +708,7 @@ function resetView(){
 /* focus camera on a body */
 function focusBody(key, openPanel){
   const rec=bodies.find(b=>b.data.key===key); if(!rec) return;
+  document.getElementById('nav').classList.remove('open');   // close the mobile drawer
   follow=null;
   const bp=worldPosOf(rec);
   tween.active=true; tween.t=0; tween.body=rec;
