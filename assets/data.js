@@ -308,6 +308,7 @@ const MOONS = [
     rocky: { base:"#7a3a10", a:"#e6a83a", b:"#2a1206", c:"#ffd060" },
     emissive: 0x401400, emissiveScale: 0.5,
     tail: 0xffb060,
+    evapTail: { alpha: 0.4, rate: 0.55 },   // "subtle comet-like tail" — much milder than Amunet's
     stats: [
       ["Mass", "0.761 × Luna"],
       ["Density", "6.23 g/cm³"],
