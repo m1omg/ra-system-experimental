@@ -3,12 +3,15 @@
 post.py — turn raw gpt-image-2 renders into sphere-ready texture maps.
 
 Reads:  tools/_raw/ai/<key>.png   (raw renders Codex produced)
-Writes: assets/img/textures/<key>.jpg   (2048x1024, seam-blended, q88)
+Writes: assets/img/textures/<key>.webp  (2048x1024, seam-blended, WebP)
+
+WebP is ~2x smaller than JPEG at equal quality, so the whole 17-body set loads
+fast from GitHub Pages while keeping full 2048 resolution for close-up flight.
 
 Post-processing:
   1. feather the left/right wrap so the 0deg/360deg meridian tiles (no seam line),
   2. resize to 2048x1024 (equirectangular 2:1),
-  3. save as optimized JPEG.
+  3. save as WebP.
 
 Pillow-only (no numpy). Usage:
   python3 tools/post.py            # process every png in tools/_raw/ai/
@@ -22,7 +25,7 @@ SRC  = ROOT / "tools" / "_raw" / "ai"
 DST  = ROOT / "assets" / "img" / "textures"
 OUT_W, OUT_H = 2048, 1024
 BAND_FRAC = 0.04          # seam feather width as a fraction of image width
-JPEG_Q = 88
+WEBP_Q = 74               # WebP quality — full 2048 sharpness at ~1/2 the JPEG size
 
 def _mask(b, h):
     """Column k -> alpha t(k)=0.5*(1-k/b): 0.5 at the seam, 0 at the band edge."""
@@ -50,8 +53,8 @@ def process(key):
     in_size = img.size
     img = seam_blend(img).resize((OUT_W, OUT_H), Image.LANCZOS)
     DST.mkdir(parents=True, exist_ok=True)
-    dst = DST / f"{key}.jpg"
-    img.save(dst, "JPEG", quality=JPEG_Q, optimize=True)
+    dst = DST / f"{key}.webp"
+    img.save(dst, "WEBP", quality=WEBP_Q, method=6)
     print(f"ok   {key:10s} {in_size[0]}x{in_size[1]} -> {OUT_W}x{OUT_H}  {dst.stat().st_size//1024} KB")
     return True
 

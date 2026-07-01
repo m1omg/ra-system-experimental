@@ -328,7 +328,7 @@ function buildBodyMesh(data, radius){
   // and on any miss/error we silently keep the procedural texture.
   if(typeof window!=='undefined' && window.USE_AI_TEXTURES){
     new THREE.TextureLoader().load(
-      'assets/img/textures/'+data.key+'.jpg',
+      'assets/img/textures/'+data.key+'.webp',
       function(t){
         t.anisotropy=4; t.wrapS=map.wrapS; t.wrapT=map.wrapT;
         if(map.encoding!==undefined) t.encoding=map.encoding;
@@ -764,6 +764,7 @@ function setupInteraction(){
   const fa=document.getElementById('fly-auto'); if(fa) fa.onclick=toggleAutoSpeed;
   const gt=document.getElementById('fly-goto'); if(gt) gt.onclick=flyGoToTarget;
   const fo=document.getElementById('fly-orient'); if(fo) fo.onclick=()=>{ autoOrient=!autoOrient; updateAutoOrientUI(); };
+  const ff=document.getElementById('fly-follow'); if(ff) ff.onclick=toggleFollow;
   const fbk=document.getElementById('fly-brake'); if(fbk) fbk.onclick=flyBrake;
   const fex=document.getElementById('fly-exit'); if(fex) fex.onclick=exitFly;
   const thr=document.getElementById('throttle'); if(thr) thr.oninput=e=>setThrottleV(+e.target.value);
@@ -773,14 +774,15 @@ function setupInteraction(){
     b.addEventListener('pointerdown',dn); b.addEventListener('pointerup',up);
     b.addEventListener('pointerleave',up); b.addEventListener('pointercancel',up); };
   holdBtn('fly-fwd',1); holdBtn('fly-back',-1);   // touch/desktop thrust (hold)
-  const MOVE=['KeyW','KeyA','KeyS','KeyD','KeyR','KeyF','KeyC','KeyQ','KeyE','Space','BracketLeft','BracketRight',
-              'ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
+  const MOVE=['KeyW','KeyA','KeyS','KeyD','KeyR','KeyC','KeyQ','KeyE','Space','BracketLeft','BracketRight',
+              'ArrowUp','ArrowDown','ArrowLeft','ArrowRight','PageUp','PageDown'];
   window.addEventListener('keydown',e=>{
     if(!flying) return;                     // while flying, capture keys even if the slider has focus
     flyKeys[e.code]=true;
     if(e.code==='BracketRight') adjustThrottle(4);
     else if(e.code==='BracketLeft') adjustThrottle(-4);
     else if(e.code==='KeyG') flyGoToTarget();
+    else if(e.code==='KeyF' && !e.repeat) toggleFollow();   // F = follow the target
     else if(e.code==='Escape') exitFly();
     if(MOVE.includes(e.code)) e.preventDefault();   // also stops arrows/Space from moving the slider/buttons
   });
@@ -904,7 +906,7 @@ function enterFly(){
   flyVel.set(0,0,0);
   document.getElementById('flyhud').classList.add('on');
   const b=document.getElementById('t-fly'); if(b) b.classList.add('on');
-  updateFlyModelUI(); updateAutoOrientUI(); updateAutoSpeedUI(); updateFlyHUD();
+  updateFlyModelUI(); updateAutoOrientUI(); updateAutoSpeedUI(); updateFollowUI(); updateFlyHUD();
 }
 function exitFly(){
   if(!flying) return;
@@ -927,6 +929,12 @@ function cycleFlyModel(){
 function updateFlyModelUI(){ const b=document.getElementById('fly-model');
   if(b) b.textContent = flyModel==='cruise'?'🛟 Cruise':flyModel==='newton'?'🚀 Newtonian':'🎮 Flycam'; }
 function updateAutoOrientUI(){ const b=document.getElementById('fly-orient'); if(b) b.classList.toggle('on',autoOrient); }
+function toggleFollow(){                       // F: lock onto the target and co-move as it orbits
+  if(flyFollow) flyFollow=null;
+  else if(flyTarget){ flyFollow=flyTarget; _flyPrevTarget.copy(worldPosOf(flyTarget)); }
+  updateFollowUI(); updateFlyHUD();
+}
+function updateFollowUI(){ const b=document.getElementById('fly-follow'); if(b) b.classList.toggle('on',!!flyFollow); }
 function toggleAutoSpeed(){ flyAutoSpeed=!flyAutoSpeed; updateAutoSpeedUI();
   const sl=document.getElementById('throttle'); setThrottleV(sl?+sl.value:0); }   // re-resolve speed for the new mode
 function updateAutoSpeedUI(){ const b=document.getElementById('fly-auto');
@@ -1049,7 +1057,7 @@ function updateFly(dt){
   _fc.set(0,1,0).applyQuaternion(camera.quaternion);
   const fwd=(flyKeys['KeyW']||flyKeys['ArrowUp']?1:0)-(flyKeys['KeyS']||flyKeys['ArrowDown']?1:0)+flyThrust;       // W/S, ↑/↓, ▲/▼
   const str=(flyKeys['KeyD']||flyKeys['ArrowRight']?1:0)-(flyKeys['KeyA']||flyKeys['ArrowLeft']?1:0);             // A/D, ←/→ strafe
-  const ver=(flyKeys['KeyR']?1:0)+(flyKeys['Space']?1:0)-(flyKeys['KeyF']?1:0)-(flyKeys['KeyC']?1:0);
+  const ver=((flyKeys['PageUp']||flyKeys['KeyR']||flyKeys['Space'])?1:0)-((flyKeys['PageDown']||flyKeys['KeyC'])?1:0); // up/down (F is now follow)
   // resolve slider -> real km/s (auto or manual); pressing a move key always yields motion
   throttleKms = flyTargetKms();
   if(fwd||str||ver) throttleKms=Math.max(throttleKms, flyFullKms()*FLY_KEY_FLOOR);
