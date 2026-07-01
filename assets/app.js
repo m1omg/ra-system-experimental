@@ -55,9 +55,10 @@ const kmsToUnits = kms => kms/KM_PER_UNIT; // km/s -> scene units/s
 // Space-Engine-style CONTEXT-RELATIVE speed: full throttle scales with the distance to the
 // nearest body, so one slider flies well everywhere — gentle beside a planet, fast (FTL) in
 // deep space. The readout still shows real km/s (and flips to fractions of c past 30,000 km/s).
-const REACH_RATE   = 3.0;                  // full throttle crosses ~3× the nearest-body gap / sec
+const REACH_RATE   = 1.0;                  // full throttle crosses ~1× the nearest-body gap / sec
 const FLY_FLOOR_KMS = 2;                   // never totally stuck at a surface
-const FLY_CAP_KMS   = 15000*C_KMS;         // absolute speed ceiling (deep-space FTL cruise)
+const FLY_CAP_KMS   = 5000*C_KMS;          // absolute speed ceiling (deep-space FTL cruise)
+const FLY_KEY_FLOOR = 0.02;                // pressing a move key always gives ≥2% of full throttle
 
 /* ============================================================
    Seeded value-noise / fbm for procedural planet textures
@@ -720,6 +721,7 @@ function setupInteraction(){
   let downX=0,downY=0,moved=false,pdown=false,lastX=0,lastY=0;
   dom.addEventListener('pointerdown',e=>{ pdown=true; downX=lastX=e.clientX; downY=lastY=e.clientY; moved=false;
     if(document.activeElement&&document.activeElement.tagName==='INPUT') document.activeElement.blur(); // free keys for flight
+    if(flying){ try{ dom.setPointerCapture(e.pointerId); }catch(_){} }   // keep look-drag alive off-canvas
     document.getElementById('nav').classList.remove('open');});
   dom.addEventListener('pointermove',e=>{
     if(Math.abs(e.clientX-downX)>4||Math.abs(e.clientY-downY)>4) moved=true;
@@ -733,7 +735,7 @@ function setupInteraction(){
   });
   dom.addEventListener('pointercancel',()=>{ pdown=false; });
   dom.addEventListener('pointerleave',()=>{tip.style.opacity=0;});
-  dom.addEventListener('wheel',e=>{ if(flying){ e.preventDefault(); adjustThrottle(e.deltaY<0?4:-4); } },{passive:false});
+  window.addEventListener('wheel',e=>{ if(flying){ e.preventDefault(); adjustThrottle(e.deltaY<0?4:-4); } },{passive:false});
 
   document.getElementById('play').onclick=togglePlay;
   document.getElementById('speed').oninput=e=>setSpeed(+e.target.value);
@@ -770,14 +772,13 @@ function setupInteraction(){
   const MOVE=['KeyW','KeyA','KeyS','KeyD','KeyR','KeyF','KeyC','KeyQ','KeyE','Space','BracketLeft','BracketRight',
               'ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
   window.addEventListener('keydown',e=>{
-    if(e.target&&(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')) return;
-    if(!flying) return;
+    if(!flying) return;                     // while flying, capture keys even if the slider has focus
     flyKeys[e.code]=true;
     if(e.code==='BracketRight') adjustThrottle(4);
     else if(e.code==='BracketLeft') adjustThrottle(-4);
     else if(e.code==='KeyG') flyGoToTarget();
     else if(e.code==='Escape') exitFly();
-    if(MOVE.includes(e.code)) e.preventDefault();
+    if(MOVE.includes(e.code)) e.preventDefault();   // also stops arrows/Space from moving the slider/buttons
   });
   window.addEventListener('keyup',e=>{ flyKeys[e.code]=false; });
 
@@ -1038,7 +1039,10 @@ function updateFly(dt){
   const fwd=(flyKeys['KeyW']||flyKeys['ArrowUp']?1:0)-(flyKeys['KeyS']||flyKeys['ArrowDown']?1:0)+flyThrust; // W/S, ↑/↓, on-screen ▲/▼
   const str=(flyKeys['KeyD']?1:0)-(flyKeys['KeyA']?1:0);
   const ver=(flyKeys['KeyR']?1:0)+(flyKeys['Space']?1:0)-(flyKeys['KeyF']?1:0)-(flyKeys['KeyC']?1:0);
-  throttleKms=flyTargetKms();            // context-relative: resolve the slider to a real km/s here
+  // context-relative speed; pressing a move key always yields motion even at zero throttle
+  const full=flyFullKms();
+  throttleKms = throttleFrac<=0 ? 0 : full*throttleFrac*throttleFrac;
+  if(fwd||str||ver) throttleKms=Math.max(throttleKms, full*FLY_KEY_FLOOR);
   const spd=kmsToUnits(throttleKms)*((flyKeys['ShiftLeft']||flyKeys['ShiftRight'])?6:1);
   if(flyModel==='cruise'){               // coast forward at throttle; ▲/W boost, ▼/S brake, A/D/R/F strafe
     flyVel.copy(_fa).multiplyScalar(spd*(1+fwd)).addScaledVector(_fb,str*spd).addScaledVector(_fc,ver*spd);
