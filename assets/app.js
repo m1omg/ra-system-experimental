@@ -51,8 +51,13 @@ function realRadiusScene(km){ return (km||1)/KM_PER_AU*AU_UNIT; }   // true radi
 // --- free-roam flight: real km <-> scene units, speed of light, throttle range (FTL) ---
 const KM_PER_UNIT = KM_PER_AU/AU_UNIT;     // real km per scene unit (≈ 1.36e6)
 const C_KMS = 299792.458;                  // speed of light, km/s
-const FLY_MIN_KMS = 1, FLY_MAX_KMS = 10000*C_KMS;   // throttle range — superluminal allowed
 const kmsToUnits = kms => kms/KM_PER_UNIT; // km/s -> scene units/s
+// Space-Engine-style CONTEXT-RELATIVE speed: full throttle scales with the distance to the
+// nearest body, so one slider flies well everywhere — gentle beside a planet, fast (FTL) in
+// deep space. The readout still shows real km/s (and flips to fractions of c past 30,000 km/s).
+const REACH_RATE   = 3.0;                  // full throttle crosses ~3× the nearest-body gap / sec
+const FLY_FLOOR_KMS = 2;                   // never totally stuck at a surface
+const FLY_CAP_KMS   = 15000*C_KMS;         // absolute speed ceiling (deep-space FTL cruise)
 
 /* ============================================================
    Seeded value-noise / fbm for procedural planet textures
@@ -259,7 +264,7 @@ const pickables=[];        // meshes for raycasting
 let selected=null;
 
 // --- free-roam flight state ---
-let flying=false, flyModel='cruise', throttleKms=0, autoOrient=false, flyThrust=0;
+let flying=false, flyModel='cruise', throttleFrac=0, throttleKms=0, autoOrient=false, flyThrust=0;
 const flyVel=new THREE.Vector3();              // current velocity (scene units/s), shared by all models
 const flyEuler=new THREE.Euler(0,0,0,'YXZ');   // look orientation: y=yaw, x=pitch, z=roll
 let flyTarget=null, flyFollow=null, flyGoto=null;
@@ -714,6 +719,7 @@ function setupInteraction(){
   const dom=renderer.domElement;
   let downX=0,downY=0,moved=false,pdown=false,lastX=0,lastY=0;
   dom.addEventListener('pointerdown',e=>{ pdown=true; downX=lastX=e.clientX; downY=lastY=e.clientY; moved=false;
+    if(document.activeElement&&document.activeElement.tagName==='INPUT') document.activeElement.blur(); // free keys for flight
     document.getElementById('nav').classList.remove('open');});
   dom.addEventListener('pointermove',e=>{
     if(Math.abs(e.clientX-downX)>4||Math.abs(e.clientY-downY)>4) moved=true;
@@ -722,9 +728,8 @@ function setupInteraction(){
   });
   dom.addEventListener('pointerup',e=>{ pdown=false;
     if(moved) return;
-    const hit=pick(e);
-    if(flying) setFlyTarget(hit);          // tap a world to make it the fly target
-    else if(hit){ focusBody(hit,true); }
+    if(flying){ setFlyTarget(pickNear(e)); }   // tap a world (tiny dots too) to target it
+    else { const hit=pick(e); if(hit) focusBody(hit,true); }
   });
   dom.addEventListener('pointercancel',()=>{ pdown=false; });
   dom.addEventListener('pointerleave',()=>{tip.style.opacity=0;});
@@ -762,7 +767,8 @@ function setupInteraction(){
     b.addEventListener('pointerdown',dn); b.addEventListener('pointerup',up);
     b.addEventListener('pointerleave',up); b.addEventListener('pointercancel',up); };
   holdBtn('fly-fwd',1); holdBtn('fly-back',-1);   // touch/desktop thrust (hold)
-  const MOVE=['KeyW','KeyA','KeyS','KeyD','KeyR','KeyF','KeyC','KeyQ','KeyE','Space','BracketLeft','BracketRight'];
+  const MOVE=['KeyW','KeyA','KeyS','KeyD','KeyR','KeyF','KeyC','KeyQ','KeyE','Space','BracketLeft','BracketRight',
+              'ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
   window.addEventListener('keydown',e=>{
     if(e.target&&(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')) return;
     if(!flying) return;
@@ -793,6 +799,22 @@ function pick(e){
   ray.params.Points={threshold:1};
   const hits=ray.intersectObjects(pickables,false);
   return hits.length? hits[0].object.userData.bodyKey : null;
+}
+/* forgiving pick: exact raycast first, else the nearest body within ~34px on screen
+   (real-scale worlds are floored to a few px, so precise ray hits are nearly impossible). */
+const _pp=new THREE.Vector3();
+function pickNear(e){
+  const exact=pick(e); if(exact) return exact;
+  const r=renderer.domElement.getBoundingClientRect();
+  let best=null, bd=34*34;
+  for(const rec of bodies){
+    _pp.copy(worldPosOf(rec)).project(camera);
+    if(_pp.z>1) continue;                                   // behind the camera
+    const sx=r.left+(_pp.x*0.5+0.5)*r.width, sy=r.top+(-_pp.y*0.5+0.5)*r.height;
+    const dd=(sx-e.clientX)**2+(sy-e.clientY)**2;
+    if(dd<bd){ bd=dd; best=rec.data.key; }
+  }
+  return best;
 }
 function hover(e){
   const k=pick(e);
@@ -903,7 +925,10 @@ function updateAutoOrientUI(){ const b=document.getElementById('fly-orient'); if
 function flyBrake(){ flyVel.set(0,0,0); }
 function setFlyTarget(key){
   const rec=key&&bodies.find(b=>b.data.key===key);
-  if(rec){ flyTarget=rec; selected=key; setActiveNav(key); }
+  if(rec){
+    if(flyTarget===rec){ flyGoToTarget(); }   // tap the current target again = fly there
+    else { flyTarget=rec; selected=key; setActiveNav(key); }
+  }
   updateFlyHUD();
 }
 function flyGoToTarget(){
@@ -914,13 +939,28 @@ function gotoFrameDist(rec){ return Math.max(realRadiusScene(rec.data.radiusKm)*
 function lookQuatAt(tp){ _fq.copy(camera.quaternion); camera.up.set(0,1,0); camera.lookAt(tp);
   const q=camera.quaternion.clone(); camera.quaternion.copy(_fq); return q; }
 
-function setThrottleV(v){               // slider 0..100 -> km/s (log); 0 = stopped
+function setThrottleV(v){               // slider 0..100 -> throttle fraction; 0 = stopped
   v=Math.max(0,Math.min(100,v));
-  throttleKms = v<=0 ? 0 : Math.exp(Math.log(FLY_MIN_KMS)+(Math.log(FLY_MAX_KMS)-Math.log(FLY_MIN_KMS))*(v/100));
+  throttleFrac = v/100;
   const sl=document.getElementById('throttle'); if(sl && +sl.value!==v) sl.value=v;
+  throttleKms = flyTargetKms();          // resolve to a real km/s for the readout
   updateFlyHUD();
 }
 function adjustThrottle(d){ const sl=document.getElementById('throttle'); if(sl) setThrottleV(+sl.value+d); }
+/* full-throttle speed for the CURRENT position: scales with the gap to the nearest body so one
+   slider works from a low pass over a moon to a superluminal deep-space cruise. */
+function flyFullKms(){
+  let best=1e12;
+  for(const rec of bodies){
+    const r=realRadiusScene(rec.data.radiusKm)*Math.max(sizeMult,1);
+    const d=camera.position.distanceTo(worldPosOf(rec))-r;
+    if(d<best) best=d;
+  }
+  best=Math.max(best,1e-5);
+  return Math.min(Math.max(best*REACH_RATE*KM_PER_UNIT, FLY_FLOOR_KMS), FLY_CAP_KMS);
+}
+/* throttle fraction -> real km/s, curved (f^2) so the low slider gives fine control */
+function flyTargetKms(){ return throttleFrac<=0 ? 0 : flyFullKms()*throttleFrac*throttleFrac; }
 
 function fmtSpeed(kms){
   if(kms<1) return '0 km/s';
@@ -964,6 +1004,10 @@ function nearestBodyDist(){
 function updateFly(dt){
   if(flyKeys['KeyQ']) flyEuler.z += dt*1.2;
   if(flyKeys['KeyE']) flyEuler.z -= dt*1.2;
+  // keyboard steering: ← → yaw-turn the view (mouse-drag still gives full free-look)
+  const turn=1.4;
+  if(flyKeys['ArrowLeft'])  flyEuler.y += turn*dt;
+  if(flyKeys['ArrowRight']) flyEuler.y -= turn*dt;
 
   // cinematic Go-to auto-pilot
   if(flyGoto){
@@ -991,9 +1035,10 @@ function updateFly(dt){
   _fa.set(0,0,-1).applyQuaternion(camera.quaternion);
   _fb.set(1,0,0).applyQuaternion(camera.quaternion);
   _fc.set(0,1,0).applyQuaternion(camera.quaternion);
-  const fwd=(flyKeys['KeyW']?1:0)-(flyKeys['KeyS']?1:0)+flyThrust;   // +on-screen ▲/▼ (touch)
+  const fwd=(flyKeys['KeyW']||flyKeys['ArrowUp']?1:0)-(flyKeys['KeyS']||flyKeys['ArrowDown']?1:0)+flyThrust; // W/S, ↑/↓, on-screen ▲/▼
   const str=(flyKeys['KeyD']?1:0)-(flyKeys['KeyA']?1:0);
   const ver=(flyKeys['KeyR']?1:0)+(flyKeys['Space']?1:0)-(flyKeys['KeyF']?1:0)-(flyKeys['KeyC']?1:0);
+  throttleKms=flyTargetKms();            // context-relative: resolve the slider to a real km/s here
   const spd=kmsToUnits(throttleKms)*((flyKeys['ShiftLeft']||flyKeys['ShiftRight'])?6:1);
   if(flyModel==='cruise'){               // coast forward at throttle; ▲/W boost, ▼/S brake, A/D/R/F strafe
     flyVel.copy(_fa).multiplyScalar(spd*(1+fwd)).addScaledVector(_fb,str*spd).addScaledVector(_fc,ver*spd);
