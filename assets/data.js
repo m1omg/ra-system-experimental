@@ -66,6 +66,7 @@ const PLANETS = [
     palette: ["#7a4a2a","#caa06a","#e6c08a","#b87a3c","#e8e0d0","#d98a4a"],
     emissive: 0x3a1402, emissiveScale: 0.35,
     atmo: 0xe0a868,
+    evapTail: true,       // it sheds vaporised envelope — drawn as a comet-like gas tail
     stats: [
       ["Type", "Hot super-Neptune (composition) / hot Saturn (mass)"],
       ["Mass", "98.8 M⊕ (0.311 Jupiter)"],
