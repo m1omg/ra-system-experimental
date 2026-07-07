@@ -341,6 +341,12 @@ const UI_EN={
   'choose-ra':'✨ The Ra System','choose-ra-sub':'A fictional world — “Satis v10”',
   'choose-sol':'🌍 The Solar System','choose-sol-sub':'Our home — real planets &amp; moons',
   'life-title':'harbours life','life-intelligent':'intelligent','life-alien':'alien','life-seeded':'seeded','life-native':'native',
+  'life-unicellular':'unicellular','life-sterile':'sterile',
+  'st-bio-now':'Biosphere (current)',
+  'bio-extinct-val':'multicellular life extinct — microbes only',
+  'bio-sterile-val':'ALL life extinct — the world is sterile',
+  'ext-note':'The bombardment sterilized the surface: every animal, plant and fungus is gone. Only single-celled life clings on in the deep rock and what remains of the seas. (🧽 Heal in the impact lab restores the biosphere.)',
+  'ext-note-sterile':'The bombardment exceeded an exaton of TNT: nothing survived, not even microbes. The world is completely sterile. (🧽 Heal in the impact lab restores the biosphere.)',
   'from-source':"From the source — author's text",
   'no-desc':'(No description in the source document yet — summary shown.)',
   'debris-type':'Debris field','debris-name-span':'destroyed','debris-tag':'A debris field.',
@@ -362,6 +368,8 @@ const UI_EN={
   'tier-puff-3':' · envelope: streaming away — breakup imminent',
   'imp-immune':' · immune to your weapons','imp-destroyed':' · ☠ destroyed — a debris field',
   'imp-strike':'strike','imp-beam':'beam/s','imp-binding-over':'≥100% of binding ☠','imp-binding-of':'% of binding',
+  'dmg-scarred':'scarred','dmg-heavy':'heavily damaged','dmg-boiled':'oceans boiled off',
+  'dmg-molten':'surface molten','dmg-critical':'near breakup',
   'imp-melts-sea':' · melts a ~{km} km lava sea',
   'tier-crater':' · surface: cratered','tier-seas':' · surface: scattered lava pools',
   'tier-thaw':' · thawing — seas of liquid water ({p}%)',
@@ -626,6 +634,9 @@ function buildBodyMesh(data, radius){
         mat.map=t; mat.needsUpdate=true;
         // the AI lava map already reads hot — ease the procedural emissive glow
         if(data.kind==='lava' && mat.emissiveIntensity!==undefined) mat.emissiveIntensity*=0.55;
+        // extinction landed before the baked map did — scrub this one too
+        const erec=bodies.find(function(b){ return b.data.key===data.key; });
+        if(erec && erec.extinct && data.vegKill){ erec._vegKilled=false; impKillVegetation(erec); }
       },
       undefined,
       function(){ /* missing / failed → keep the procedural texture */ }
@@ -1745,7 +1756,90 @@ function impEaseMeltVisual(rec,dt){
   s.steamM=ease(s.steamM||0, s.steamTarget||0, 0.55);
   impApplyMeltVisual(rec);
 }
+/* ---- extinction tiers: life is more fragile than crust. A living world that
+   absorbs ≥ IMP_EXTINCT_J (~239 petatons TNT) loses all MULTICELLULAR life —
+   its vegetation is scrubbed from the surface map and the sidebar tag drops
+   to "unicellular". Past IMP_STERILE_J (1 exaton TNT) ALL life dies: any
+   life-tagged world (Satis, Earth, Nephtys, Uat-Ur, Nu) goes fully sterile.
+   🧽 Heal resurrects the biosphere along with everything else. ---- */
+const IMP_EXTINCT_J=1e27;                    // multicellular extinction (vegKill worlds)
+const IMP_STERILE_J=4.184e27;                // 1 Et TNT: total sterilization (all life tags)
+function impCheckExtinct(rec){
+  if(!rec.data.life || rec.destroyed) return;
+  const E=rec.dmgJ||0;
+  if(!rec.sterile && E>=IMP_STERILE_J) impGoExtinct(rec,true);
+  else if(!rec.extinct && rec.data.vegKill && E>=IMP_EXTINCT_J) impGoExtinct(rec,false);
+}
+function impGoExtinct(rec, sterile){
+  rec.extinct=true;
+  if(sterile) rec.sterile=true;
+  if(rec.data.vegKill) impKillVegetation(rec);
+  updateNavStatus(rec);
+  if(APP.currentData && APP.currentData.key===rec.data.key &&
+     document.getElementById('info').classList.contains('open')) openInfo(rec.data);
+}
+/* scrub the vegetation hue family from whatever map is live — the procedural
+   canvas, the AI-baked webp or the real photo texture all expose a drawable
+   .image. Veg pixels are blended toward a luminance-matched barren tan;
+   oceans, ice and clouds are left alone. */
+function impKillVegetation(rec){
+  if(rec._vegKilled) return;
+  const mat=rec.mesh&&rec.mesh.material; if(!mat||!mat.map) return;
+  const img=mat.map.image;
+  if(!img || !(img.width>0)){                // baked map still in flight — retry shortly
+    setTimeout(function(){ if(rec.extinct) impKillVegetation(rec); }, 400);
+    return;
+  }
+  const W=Math.min(2048,img.width), H=Math.round(W*(img.height/img.width));
+  const cv=newCanvas(W,H), cx=cv.getContext('2d');
+  const purple=rec.data.vegKill==='purple';
+  const kill=function(){                     // draw the source map, scrub the veg hues
+    cx.drawImage(img,0,0,W,H);
+    try{
+      const im=cx.getImageData(0,0,W,H), d=im.data;
+      for(let i=0;i<d.length;i+=4){
+        const r=d[i], g=d[i+1], b=d[i+2];
+        const veg = purple ? (r>g*1.12 && b>g*1.12 && r+b>110)
+                           : (g>r*1.04 && g>b*1.04 && g>34);
+        if(!veg) continue;
+        const lum=0.30*r+0.55*g+0.15*b;
+        // barren regolith tinted by the original brightness
+        d[i]  =Math.round(r*0.15 + (lum*0.72+58)*0.85);
+        d[i+1]=Math.round(g*0.15 + (lum*0.66+44)*0.85);
+        d[i+2]=Math.round(b*0.15 + (lum*0.55+30)*0.85);
+      }
+      cx.putImageData(im,0,0);
+      return true;
+    }catch(_){ return false; }               // tainted canvas (file:// photo) — keep the live map
+  };
+  if(!kill()) return;
+  if(rec._extinctTex){ unregCanvasTex(rec._extinctTex); rec._extinctTex.dispose(); }  // re-kill after a late baked load
+  const src=mat.map;
+  const tex=new THREE.CanvasTexture(cv);
+  tex.anisotropy=src.anisotropy||4; tex.wrapS=src.wrapS; tex.wrapT=src.wrapT;
+  if(src.encoding!==undefined) tex.encoding=src.encoding;
+  regCanvasTex(tex, function(){              // Android canvas-wipe survival
+    if(!rec.extinct || mat.map!==tex) return;
+    kill(); tex.needsUpdate=true;
+  });
+  rec._preExtinctMap=src;
+  rec._extinctTex=tex;
+  rec._vegKilled=true;
+  mat.map=tex; mat.needsUpdate=true;
+}
+function impHealExtinct(rec){                // 🧽: the biosphere comes back too
+  if(!rec.extinct && !rec.sterile) return;
+  rec.extinct=false; rec.sterile=false;
+  if(rec._vegKilled){
+    const mat=rec.mesh&&rec.mesh.material;
+    if(mat && rec._preExtinctMap){ mat.map=rec._preExtinctMap; mat.needsUpdate=true; }
+    if(rec._extinctTex){ unregCanvasTex(rec._extinctTex); rec._extinctTex.dispose(); rec._extinctTex=null; }
+    rec._preExtinctMap=null; rec._vegKilled=false;
+  }
+  updateNavStatus(rec);
+}
 function impUpdateMelt(rec){                 // cumulative surface state from the phase budgets
+  impCheckExtinct(rec);                      // life dies long before crust does
   if(!rec.scar || impImmune(rec)) return;
   if(rec._generated) return;                 // remnants are already molten; avoid extra full-body overlays.
   if(rec.data.kind==='gasgiant'||impIsStellar(rec)){ impUpdatePuff(rec); return; }
@@ -3072,6 +3166,7 @@ function impHeal(){
         const el=labelEls[rec.data.key]; if(el) el.textContent=locName(rec.data);
       } else removeDebrisField(rec);   // resurrect the world
     }
+    impHealExtinct(rec);               // the biosphere comes back with the crust
   }
   if(!realScale) applySizes();                  // deflated giants: reapply compressed-mode scales
   // undo impact-momentum orbit changes (liberated moons were restored above)
@@ -3977,11 +4072,34 @@ function pickNear(e){
   }
   return best;
 }
+/* damage stage for the hover tooltip — shown for ANY damaged world, even
+   with the impact lab closed: stage word, % of binding energy, biosphere */
+function impDamageStageTxt(rec){
+  if(rec.destroyed) return T('imp-destroyed');
+  const E=rec.dmgJ||0; if(!(E>0)) return '';
+  const fU=E/impBindingJ(rec);
+  let st;
+  if(fU>=0.5) st=T('dmg-critical');
+  else if(rec.data.kind==='gasgiant'||impIsStellar(rec)) st=T('dmg-heavy');
+  else{
+    const P=impMeltPhases(rec);
+    if(E>=P.E3) st=T('dmg-molten');
+    else if(P.W>0 && E>=P.E2) st=T('dmg-boiled');
+    else if(fU>=0.02 || E>=P.E2*0.3) st=T('dmg-heavy');
+    else st=T('dmg-scarred');
+  }
+  const pct=fU*100;
+  let t=' · 💥 '+st+' ('+(pct<0.01?'<0.01':''+(+pct.toPrecision(2)))+T('imp-binding-of')+')';
+  if(rec.sterile) t+=' · ∅ '+T('life-sterile');
+  else if(rec.extinct) t+=' · ✦ '+T('life-unicellular');
+  return t;
+}
 function hover(e){
   const k=pick(e);
   renderer.domElement.style.cursor = impacting ? 'crosshair' : (k?'pointer':'grab');
   if(k){ const rec=bodies.find(b=>b.data.key===k);
     let txt=locName(rec.data);
+    if(!impacting && rec) txt+=impDamageStageTxt(rec);
     if(impacting && rec){
       if(impImmune(rec)) txt+=T('imp-immune');
       else if(rec.destroyed) txt+=T('imp-destroyed');
@@ -4306,6 +4424,14 @@ function updateNavStatus(rec){
     if(!tag){ tag=document.createElement('span'); tag.className='tag'; el.appendChild(tag); }
     tag.className='tag dead'; tag.removeAttribute('title');
     tag.innerHTML='☠&nbsp;'+T('nav-destroyed');
+  } else if(rec.sterile && rec.data.life){
+    if(!tag){ tag=document.createElement('span'); el.appendChild(tag); }
+    tag.className='tag ext'; tag.title=T('life-title');
+    tag.innerHTML='∅&nbsp;'+T('life-sterile');
+  } else if(rec.extinct && rec.data.life){
+    if(!tag){ tag=document.createElement('span'); el.appendChild(tag); }
+    tag.className='tag ext'; tag.title=T('life-title');
+    tag.innerHTML='✦&nbsp;'+T('life-unicellular');
   } else if(rec.data.life){
     if(!tag){ tag=document.createElement('span'); el.appendChild(tag); }
     tag.className='tag'; tag.title=T('life-title');
@@ -4370,6 +4496,12 @@ function openInfo(d){
     tr.innerHTML='<td>⚠ '+T('st-water-now')+'</td><td>'+fmtKg(prec._impWaterKg)+'</td>';
     t.appendChild(tr);
   }
+  // a sterilized biosphere overrides the book's life claims
+  if(prec && !prec.destroyed && (prec.extinct||prec.sterile)){
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>⚠ '+T('st-bio-now')+'</td><td>'+T(prec.sterile?'bio-sterile-val':'bio-extinct-val')+'</td>';
+    t.appendChild(tr);
+  }
   // description
   const ds=document.getElementById('i-desc'); ds.innerHTML='';
   const addParas=(text)=>{ (text||'').split('\n\n').forEach(par=>{ if(!par.trim())return;
@@ -4390,6 +4522,13 @@ function openInfo(d){
     // default edition: my short summary, then the author's verbatim text beneath it
     addParas(locDesc(d));
     if(verbatim){ addSource(T('from-source')); addParas(verbatim); }
+  }
+  // extinction note — a separate element AFTER the (untouchable) source text
+  if(prec && !prec.destroyed && (prec.extinct||prec.sterile)){
+    const note=document.createElement('p');
+    note.style.cssText='font-style:italic;color:#c08a8a;font-size:12px';
+    note.textContent='⚠ '+T(prec.sterile?'ext-note-sterile':'ext-note');
+    ds.insertBefore(note, ds.firstChild);
   }
   document.getElementById('info').classList.add('open');
   syncInfoBtn();

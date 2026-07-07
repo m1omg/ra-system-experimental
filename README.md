@@ -93,6 +93,11 @@ It is a genuine little physics sandbox, not just an effect:
 - **Momentum is conserved.** A massive, fast strike **kicks the target's orbit** — the
   new ellipse is recomputed exactly from the perturbed state vector and redrawn.
 - **Superheated worlds lose mass**, and the data panel tracks the live figure.
+- **Life is more fragile than crust.** A living world that absorbs over **10²⁷ J
+  (~239 petatons TNT)** loses all multicellular life — Satis's violet forests and
+  Earth's green lands are scrubbed from the surface map and the sidebar tag drops to
+  *✦ unicellular*. Past **1 exaton of TNT** all life dies and the world goes *∅ sterile*.
+  Hovering any damaged world shows its damage stage even outside the impact lab.
 - **🧽 Heal** removes every scar, re-forms shattered worlds, and re-captures their moons.
 
 ## Sound (🔊)
