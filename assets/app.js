@@ -844,6 +844,9 @@ function buildInner(){
   applyScaleMode();   // sets star size, body sizes, orbit radii for the current mode
   frameSystem();      // place the camera for the current mode
 
+  setupStateUI();        // 💾/📂/⬇/⬆ wiring
+  restoreSystemState();  // auto-resume the saved world, if any
+
   hideLoader();       // synchronous — never depends on a throttled timer (mobile app-switch)
 
   // optional deep-link: index.html#satis focuses a body on load
@@ -2066,12 +2069,14 @@ function impRingTexture(){
   _impRingTex=new THREE.CanvasTexture(c); return _impRingTex;
 }
 function spawnFlash(wp, R, E){
+  if(impRestoring) return;                    // state restore replays outcomes, not fireworks
   const sc=R*(0.9+0.6*Math.min(4, Math.max(0,Math.log10(Math.max(1,E/IMP_CHICXULUB_J)))+1));
   const sp=acquireFxSprite(_flashPool, impFlashTexture());
   sp.position.copy(wp);
   impFx.push({o:sp,t:0,T:0.7,kind:'flash',sc,pool:_flashPool});
 }
 function spawnShock(wp, R, E){
+  if(impRestoring) return;                    // state restore replays outcomes, not fireworks
   const sc=R*(1.1+0.5*Math.min(4, Math.max(0,Math.log10(Math.max(1,E/IMP_CHICXULUB_J)))+1));
   const sp=acquireFxSprite(_shockPool, impRingTexture());
   sp.position.copy(wp);
@@ -2113,6 +2118,7 @@ function getImpPool(){
   return impPool;
 }
 function emitBurst(wp, n, dirFn, speed, sizeBase, life){
+  if(impRestoring) return;                    // state restore replays outcomes, not fireworks
   const P=getImpPool();
   for(let k=0;k<n;k++){
     const i=P.head; P.head=(P.head+1)%P.N;
@@ -2398,7 +2404,7 @@ const SN_SHOCK_YR_PER_AU = SN_LIGHT_YR_PER_AU/SN_SHOCK_C;
 const SN_RAD_FRAC = 0.5;   // share of a body's absorbed energy delivered by the radiation flash
                            // (rest arrives with the shock, along with the orbit kick)
 const impBlastQueue=[];
-function impBlastDamage(source, blastE, states, skipOrbitKicks){
+function impBlastDamage(source, blastE, states){
   const sourceState=states.get(source)||raStateOf(source);
   const kicks=new Map();
   for(const rec of bodies.slice()){
@@ -2647,7 +2653,7 @@ function shatterStellar(rec){
   makeStellarBlast(rec,blastE);
   // queue the outward-sweeping damage wave (arrivals staggered by distance);
   // survivors of a star death are unbound NOW — their kick lands with the wave
-  impBlastDamage(rec,blastE,states,rec.data.kind==='star');
+  impBlastDamage(rec,blastE,states);
   if(rec.data.kind==='star') freeRaSurvivors(rec,states,null);
   else liberateMoons(rec);
   updateNavStatus(rec);
@@ -3251,6 +3257,7 @@ function sfxImpact(rec,E){
   sfxBoom(sfxDistGain(rec)*(0.35+0.65*k), k, sfxAC.currentTime);
 }
 function sfxShatter(rec){
+  if(impRestoring) return;                    // state restore replays outcomes, not fireworks
   if(!sfxReady()) return;
   const t=sfxAC.currentTime, g0=Math.max(0.5,sfxDistGain(rec));
   sfxBoom(g0*1.2, 1, t);
@@ -4166,6 +4173,148 @@ function fmtElapsed(yr){
   const mi=h*60;       if(mi>=1) return mi.toFixed(0)+' '+T('e-min');
   return (mi*60).toFixed(0)+' '+T('e-s');
 }
+
+/* ============================================================
+   💾 System state save / load / export  (Experimental edition)
+   Hybrid snapshot: scalars + orbital elements are serialized;
+   scars replay from scar.log via impReplayScarBase; melt/ocean/
+   steam/puff/extinction all re-derive from dmgJ via impUpdateMelt.
+   Saved per edition+system (localStorage is shared across the
+   three GitHub Pages sites). Auto-restores on load.
+   ============================================================ */
+const ST_VER=1, ST_ED='exp';
+function stateKey(){ return 'ra-exp-state:'+(typeof SYS!=='undefined'?SYS:'ra'); }
+let impRestoring=false;
+const _ST_STYLES=[['C',IMP_CHAR],['CS',IMP_CHAR_SOFT],['L',IMP_LAVA],['LS',IMP_LAVA_SOFT]];
+function stStyleName(st){ const e=_ST_STYLES.find(x=>x[1]===st); return e?e[0]:st; }
+function stStyleFromName(n){ const e=_ST_STYLES.find(x=>x[0]===n); return e?e[1]:n; }
+function saveSystemState(){
+  const out={v:ST_VER, ed:ST_ED, sys:SYS, t:Date.now(),
+    elapsedYears:+elapsedYears.toFixed(6), bodies:{}};
+  for(const rec of bodies){
+    if(rec._generated) continue;                     // rumps/moonlets re-evolve from the shatter
+    const b={M:+(rec.M%(Math.PI*2)).toFixed(6)};
+    if(rec.dmgJ>0) b.dmg=rec.dmgJ;
+    if(rec.shattered) b.shat=1;
+    if(rec.destroyed) b.dest=1;
+    if(rec._impWaterKg>0) b.waterKg=rec._impWaterKg;
+    if(rec.orbitPerturbed && !rec.freeState && !rec.destroyed)
+      b.orb={helioA:rec.helioA, physA:rec._physA, e:rec.e, q:rec.q.toArray(), period:rec.period};
+    if(rec.freeState) b.free={r:rec.freeState.r.toArray(), v:rec.freeState.v.toArray()};
+    if(rec.scar && rec.scar.log && rec.scar.log.length)
+      b.log=rec.scar.log.map(L=>[L.l, +L.u.toFixed(4), +L.v.toFixed(4), Math.round(L.r),
+        stStyleName(L.s), L.a==null?null:+L.a.toFixed(3)]);
+    out.bodies[rec.data.key]=b;
+  }
+  try{ localStorage.setItem(stateKey(), JSON.stringify(out)); }catch(_){ return false; }
+  return true;
+}
+function restoreSystemState(){
+  let st=null;
+  try{ st=JSON.parse(localStorage.getItem(stateKey())||'null'); }catch(_){}
+  if(!st || st.v!==ST_VER || st.sys!==SYS) return;
+  impRestoring=true;
+  try{
+    // 1. phases, perturbed orbits, damage scalars + scar replay
+    const destroyed=[];
+    for(const key in st.bodies){
+      const rec=bodies.find(b=>b.data.key===key); if(!rec) continue;
+      const b=st.bodies[key];
+      if(b.M!=null) rec.M=b.M;
+      if(b.orb){
+        // snapshot the pristine orbit FIRST so 🧽 Heal can still undo it
+        if(!rec._origOrbit) rec._origOrbit=rec.helio
+          ? {helio:true, helioA:rec.helioA, e:rec.e, q:rec.q.clone(), period:rec.period}
+          : {helio:false, _physA:rec._physA||null, e:rec.e, q:rec.q.clone(),
+             period:rec.period, aDispReal:rec.aDispReal, aDispCompressed:rec.aDispCompressed};
+        rec.e=b.orb.e; rec.q=new THREE.Quaternion().fromArray(b.orb.q); rec.period=b.orb.period;
+        if(rec.helio && b.orb.helioA!=null){ rec.helioA=b.orb.helioA; rec.aDisp=distDisp(b.orb.helioA); }
+        else if(b.orb.physA!=null){
+          const ratio=b.orb.physA/(rec._physA!=null?rec._physA:rec.data.dist);
+          rec._physA=b.orb.physA;
+          if(rec.aDispReal) rec.aDispReal*=ratio;
+          if(rec.aDispCompressed) rec.aDispCompressed*=ratio;
+          rec.aDisp=realScale?rec.aDispReal:rec.aDispCompressed;
+        }
+        rec.orbitPerturbed=true;
+        if(rec.orbitLine){ rebuildOrbitLine(rec); rec.orbitLine.quaternion.copy(rec.q); }
+      }
+      if(b.dmg>0){
+        rec.dmgJ=b.dmg;
+        const s=getScars(rec);
+        if(b.log){ s.log=b.log.map(L=>({l:L[0],u:L[1],v:L[2],r:L[3],s:stStyleFromName(L[4]),a:L[5]==null?undefined:L[5]}));
+          impReplayScarBase(s);
+          s.meltT.needsUpdate=true; s.glowT.needsUpdate=true; }
+        impUpdateMelt(rec);        // regenerates melt/ocean/steam/puff/extinction from dmgJ
+      }
+      if(b.waterKg>0) rec._impWaterKg=b.waterKg;
+      if(b.dest) destroyed.push(rec);
+      positionBody(rec);
+    }
+    // 2. shatter the dead quietly — planets first, then a dead star (its blast
+    //    wave already did its work: every consequence is in the saved fields)
+    destroyed.sort((a,b2)=>(a.data.kind==='star'?1:0)-(b2.data.kind==='star'?1:0));
+    for(const rec of destroyed){ if(!rec.destroyed) shatterBody(rec); }
+    impBlastQueue.length=0;
+    for(const B of stellarBlasts){ finishStellarBlast(B); }
+    if(destroyed.some(r=>r.data.kind==='star') && sunLight) sunLight.intensity=0;
+    // 3. supernova survivors fly their saved straight lines, exactly
+    for(const key in st.bodies){
+      const rec=bodies.find(b2=>b2.data.key===key); if(!rec) continue;
+      const b=st.bodies[key];
+      if(!b.free || rec.destroyed) continue;
+      if(!rec._preFree) rec._preFree={parentHolder:rec.parentHolder, helio:rec.helio, isMoon:rec.isMoon,
+        helioA:rec.helioA, _physA:rec._physA, aDisp:rec.aDisp, aDispReal:rec.aDispReal,
+        aDispCompressed:rec.aDispCompressed, e:rec.e, q:rec.q.clone(), M:rec.M,
+        period:rec.period, orbitLine:rec.orbitLine};
+      if(rec.orbitLine) rec.orbitLine.visible=false;
+      rec.parentHolder=sunHolder; sunHolder.add(rec.holder);
+      rec.helio=false; rec.isMoon=false; rec.aDisp=0;
+      rec.freeState={r:new THREE.Vector3().fromArray(b.free.r), v:new THREE.Vector3().fromArray(b.free.v)};
+      rec.orbitPerturbed=true;
+      positionFreeBody(rec);
+    }
+    if(st.elapsedYears>0){ elapsedYears=st.elapsedYears; updateClock(); }
+  } finally { impRestoring=false; }
+}
+function exportSystemState(){
+  saveSystemState();                                   // export exactly what Load would restore
+  const bundle={ state:JSON.parse(localStorage.getItem(stateKey())||'null') };
+  const blob=new Blob([JSON.stringify(bundle)],{type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=ST_ED+'-'+SYS+'-state.json';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+}
+function importSystemState(file){
+  const rd=new FileReader();
+  rd.onload=function(){
+    try{
+      const bundle=JSON.parse(rd.result);
+      const s=bundle.state;
+      if(!s || s.v!==ST_VER || s.ed!==ST_ED) throw new Error('wrong edition/version');
+      localStorage.setItem('ra-system', s.sys);        // a sol save switches the app to sol
+      localStorage.setItem('ra-exp-state:'+s.sys, JSON.stringify(s));
+      location.reload();
+    }catch(err){ alert('Not a valid '+ST_ED+' state file ('+err.message+')'); }
+  };
+  rd.readAsText(file);
+}
+function setupStateUI(){
+  const g=id=>document.getElementById(id);
+  const flash=(btn,txt)=>{ const t0=btn.textContent; btn.textContent=txt;
+    setTimeout(()=>{ btn.textContent=t0; },900); };
+  if(g('t-save')) g('t-save').onclick=function(){ flash(this, saveSystemState()?'💾 ✓':'💾 ✗'); };
+  if(g('t-load')) g('t-load').onclick=function(){
+    if(localStorage.getItem(stateKey())) location.reload();
+    else flash(this,'📂 —'); };
+  if(g('t-export')) g('t-export').onclick=exportSystemState;
+  if(g('t-import')) g('t-import').onclick=()=>g('t-import-file').click();
+  if(g('t-import-file')) g('t-import-file').onchange=function(){
+    if(this.files && this.files[0]) importSystemState(this.files[0]); this.value=''; };
+}
+
 function updateClock(){ const el=document.getElementById('elapsed'); if(el) el.textContent='⏱ '+fmtElapsed(elapsedYears); }
 function setSize(v){
   sizeMult=v/100;
